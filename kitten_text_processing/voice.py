@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 VOICE_LANGUAGES = ('en','ar','zh','nl','fr','de','hi','id','it','ja','ko','pl','pt','ru','es','tr')
-VOICE_RULE_VERSION = 'voice-20261015-1'
+VOICE_RULE_VERSION = 'voice-20261015-2'
 
 class VoiceNormalizer:
     def __init__(self, library=None):

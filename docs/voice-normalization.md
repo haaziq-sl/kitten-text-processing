@@ -59,21 +59,35 @@ public locale, date-order, calendar or pronunciation override.
   zero-decimal currencies, are spoken as decimals in major units. Nothing is
   rounded or calculated with floating point. Explicit magnitude suffixes such
   as `$1.2M` and `₹1.25 लाख` are expanded by shifting decimal strings.
-* Clock times support `HH:MM`, `HH:MM:SS`, and AM/PM. AM/PM is retained as
-  spoken letters in English and converted to the corresponding 24-hour
-  value for the other profiles. Dotted times require a clock cue; a bare
+* Clock times support `HH:MM`, `HH:MM:SS`, and AM/PM. English retains spoken
+  AM/PM letters. Explicit Arabic AM/PM uses twelve-hour readings with a day
+  period and natural quarter/half-hour wording. Korean uses Sino-Korean
+  hours for bare 24-hour times, and native hours with 오전/오후 for AM/PM.
+  Other profiles retain their fixed 24-hour readings. Full timestamps name
+  minutes explicitly in Dutch, French, German and Spanish. Dotted times require a clock cue; a bare
   `14.05` remains a number. Invalid clock values are retained. UTC/GMT offsets
   retain their sign and validate the offset before expansion.
 * Dash ranges between numbers, amounts and clock times use a native range
   connector. Recognizable telephone numbers take precedence over numeric
   ranges. Percentage symbols before or after a value use native wording.
-* URLs, email addresses, paths, alphanumeric identifiers, explicit software
-  versions, IP-like strings and bare fractions are protected. Normalization
-  does not guess a mathematical meaning for these identifiers.
+* Telephone-shaped sequences and explicit phone/code contexts read digits
+  individually, including zeros and country codes. Existing groups receive
+  short punctuation breaks, and recognizable extensions name the extension.
+* Email addresses and websites read punctuation using the voice language:
+  at, dot, underscore, hyphen, slash and query separators. Written labels
+  retain their spelling; digits inside addresses are read individually.
+  HTTP/HTTPS letters are spelled when a scheme is present. Bare domains
+  require a recognized common suffix; explicit HTTP/HTTPS and www addresses
+  work with other suffixes. Sentence punctuation stays outside the address.
+* Paths, alphanumeric identifiers, explicit software versions, IP-like
+  strings and bare fractions stay protected from mathematical interpretation.
 * Chinese counters distinguish `两` where appropriate; Korean count counters
   use native attributive numbers. Dates and clocks have language-specific
-  wording. These fixed rules do not implement general grammatical case
-  inference from arbitrary surrounding prose.
+  wording. Russian monetary amounts following explicit forms of составляет
+  use accusative number readings; the governing phrase is retained across
+  segmentation. These fixed rules do not implement general grammatical case
+  inference from arbitrary surrounding prose. Explicit Indonesian rupiah
+  fractions of up to two places use sen without rounding.
 
 ## Serving and build
 
@@ -87,7 +101,7 @@ data and lexical glue. Both serving engines vendor the same source bytes.
 cmake -S . -B build/voice -DKITTEN_BUILD_VOICE_NORMALIZATION=ON
 cmake --build build/voice -j4
 KITTEN_VOICE_NORMALIZATION_LIBRARY=$PWD/build/voice/libkitten_voice_normalization.so \
-  python -m unittest discover -s tests -p test_voice.py -v
+  python -m unittest discover -s tests -p 'test_voice*.py' -v
 ```
 
 `tools/build_voice.sh` is a smaller shared-library-only build. Its optional

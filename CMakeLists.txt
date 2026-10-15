@@ -79,7 +79,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/KittenTextProcessingConfig.cmake"
 if(BUILD_TESTING)
     if(KITTEN_BUILD_VOICE_NORMALIZATION)
         find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
-        add_test(NAME voice.profiles COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p test_voice.py -v)
+        add_test(NAME voice.profiles COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p "test_voice*.py" -v)
         set_tests_properties(voice.profiles PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
             ENVIRONMENT "KITTEN_VOICE_NORMALIZATION_LIBRARY=$<TARGET_FILE:kitten_voice_normalization>")
     endif()
