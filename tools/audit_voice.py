@@ -6,6 +6,7 @@ Run with --input PATH repeatedly; .txt inputs use --text-language (English).
 import argparse
 from collections import Counter
 import json
+import re
 from pathlib import Path
 import sys
 import time
@@ -13,6 +14,10 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from kitten_text_processing.voice import VoiceNormalizer, VOICE_LANGUAGES
+
+# Contact strings without digits now intentionally change. Keep ordinary
+# prose as a separate invariant; do not rewrite the historical expectations.
+CONTACT = re.compile(r'@|https?://|www\.|\b[\w-]+\.(?:com|org|net|io|ai|co|gov|edu|app|dev|info|biz|me|name|tv|xyz|online|site|tech|store|example|test|us|uk|cn|nl|fr|de|in|id|it|jp|kr|pl|br|pt|ru|es|tr|sa|ae|om|au|ca|nz|ch|at|be|se|no|dk|fi|za|sg|hk|рф|中国|भारत|한국|السعودية)(?:\b|/)', re.I)
 
 
 def main():
@@ -67,7 +72,11 @@ def main():
                             result['outcome'] = 'not_idempotent'
                             counts['not_idempotent'] += 1
                         if not any(c.isdigit() for c in text) and actual != text:
-                            counts['prose_changed'] += 1
+                            if CONTACT.search(text):
+                                counts['contact_prose_changed'] += 1
+                                result['intentional_contact_rewrite'] = True
+                            else:
+                                counts['prose_changed'] += 1
                     except UnicodeError as exc:
                         result.update(outcome='invalid_unicode', error=type(exc).__name__)
                         counts['invalid_unicode'] += 1

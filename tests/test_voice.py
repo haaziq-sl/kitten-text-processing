@@ -40,12 +40,12 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(self.n.normalize('€0.001', 'en'), 'zero point zero zero one euros')
         self.assertEqual(self.n.normalize('12,50 €', 'es'), 'doce euros y cincuenta céntimos')
         self.assertEqual(self.n.normalize('Rp12.500,50', 'id'),
-                         'dua belas ribu lima ratus koma lima nol Rupiah Indonesia')
+                         'dua belas ribu lima ratus rupiah lima puluh sen')
 
     def test_identifiers_are_not_partially_rewritten(self):
         for lang in VOICE_LANGUAGES:
-            for value in ('https://x.example/a?price=12.50', 'a12@example.com',
-                          'v1.2.3', 'AB12.34', '192.168.1.2', '1e-10', '1/2'):
+            for value in ('v1.2.3', 'AB12.34', '192.168.1.2', '1e-10', '1/2',
+                          'file.csv', 'Dr.Smith', 'noon.It'):
                 with self.subTest(lang=lang, value=value):
                     self.assertEqual(self.n.normalize(value, lang), value)
         self.assertEqual(self.n.normalize('0012', 'en'), 'zero zero one two')

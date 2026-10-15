@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 namespace kitten_voice {
-inline constexpr const char* rule_version = "voice-20261015-1";
+inline constexpr const char* rule_version = "voice-20261015-2";
 // Structured values only. Ordinary prose and protected identifiers are
 // retained. Thread safe. All number calculations use decimal strings / exact
 // integers.

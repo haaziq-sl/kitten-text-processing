@@ -156,6 +156,7 @@ std::string quote_regex(const std::string& s) { return "\\Q" + s + "\\E"; }
 struct Context {
   const Profile& p;
   std::unique_ptr<icu::RuleBasedNumberFormat> rbnf;
+  std::array<std::string, 10> digit_names;
   explicit Context(const Profile& v) : p(v) {
     UErrorCode e = U_ZERO_ERROR;
     UParseError pe{};
@@ -202,6 +203,10 @@ struct Context {
       rule = "%spellout-ordinal-masculine-genitive";
     else if (kind == "native")
       rule = "%spellout-cardinal-native-attributive";
+    else if (kind == "accusative")
+      rule = "%spellout-cardinal-masculine-accusative";
+    else if (kind == "feminine_accusative")
+      rule = "%spellout-cardinal-feminine-accusative";
     else if (feminine)
       rule = p.language == "ar" ? "%spellout-cardinal-masculine"
                                 : "%spellout-cardinal-feminine";
@@ -242,7 +247,11 @@ struct Context {
   std::string digit_words(const std::string& v) {
     std::vector<std::string> out;
     for (char c : v)
-      if (c >= '0' && c <= '9') out.push_back(spell(std::string(1, c)));
+      if (c >= '0' && c <= '9') {
+        auto& word = digit_names[c - '0'];
+        if (word.empty()) word = spell(std::string(1, c));
+        out.push_back(word);
+      }
     return join(out, p.language == "zh" || p.language == "ja" ? "" : " ");
   }
   std::string number(const Number& n, bool unit = false,
@@ -290,10 +299,14 @@ struct Context {
       return v == 1 ? word + " " + spell(n, "unit", feminine) : word;
     return spell(n, "unit", feminine) + " " + word;
   }
-  std::string money(const Number& n, const std::string& code) {
+  std::string money(const Number& n, const std::string& code,
+                    bool accusative = false) {
     auto it = p.currencies.find(code);
     if (it == p.currencies.end()) return "";
     const Currency& cu = it->second;
+    // Explicit fractional rupiah amounts retain their sen; never round them
+    // away because modern display data usually omit the minor denomination.
+    const int minor_digits = p.language == "id" && code == "IDR" ? 2 : cu.digits;
     bool female = code == "GBP" || code == "INR";
     std::string whole = n.whole;
     size_t nz = whole.find_first_not_of('0');
@@ -306,6 +319,8 @@ struct Context {
     if (p.language == "zh" && code == "CNY") major = "元";
     if (p.language == "ja" && code == "JPY") major = "円";
     if (p.language == "ko" && code == "KRW") major = "원";
+    if (p.language == "ko" && code == "USD") major = "달러";
+    if (p.language == "id" && code == "IDR") major = "rupiah";
     if (p.language == "ar") {
       static const std::map<std::string, std::array<std::string, 5>> ar = {
           {"USD",
@@ -331,17 +346,22 @@ struct Context {
       if (a != ar.end()) major = a->second[cat];
     }
     bool east = p.language == "zh" || p.language == "ja";
-    std::string out = spell(whole, "unit", female) + (east ? "" : " ") + major;
+    std::string amount = spell(whole, accusative && p.language == "ru"
+                                          ? (female ? "feminine_accusative" : "accusative")
+                                          : "unit", female);
+    if (accusative && p.language == "ru" && value % 1000000 / 1000 == 1)
+      replace_all(amount, "одну тысячу", "тысячу");
+    std::string out = amount + (east ? "" : " ") + major;
     if (p.language == "ar" && value == 1) out = major + " واحد";
     if (p.language == "ar" && value == 2) out = major;
     if (!n.fraction.empty() &&
         n.fraction.find_first_not_of('0') != std::string::npos) {
-      if (cu.digits <= 0 || static_cast<int>(n.fraction.size()) > cu.digits) {
+      if (minor_digits <= 0 || static_cast<int>(n.fraction.size()) > minor_digits) {
         Number dec{whole, n.fraction, 0};
         out = number(dec, true, female) + (east ? "" : " ") + major;
       } else {
         std::string frac = n.fraction;
-        while (static_cast<int>(frac.size()) < cu.digits) frac += '0';
+        while (static_cast<int>(frac.size()) < minor_digits) frac += '0';
         int64_t f = std::stoll(frac);
         std::string fstr = std::to_string(f);
         std::vector<std::string> forms{p.words[11], p.words[12]};
@@ -366,6 +386,7 @@ struct Context {
           forms = {"grosz", "grosza", "grosze", "groszy", "grosza"};
         if (code == "TRY" && p.language == "tr") forms = {"kuruş", "kuruş"};
         if (code == "IDR" && p.language == "id") forms = {"sen", "sen"};
+        if (code == "USD" && p.language == "zh") forms = {"美分", "美分"};
         if (code == "EUR" && p.language == "es")
           forms = {"céntimo", "céntimos"};
         if (code == "EUR" && p.language == "pt")
@@ -390,8 +411,11 @@ struct Context {
           if (frac[1] != '0') minor += spell(std::string(1, frac[1])) + "分";
           out += minor;
         } else if (east) {
-          out += " " + spell(fstr) + forms[f == 1 ? 0 : forms.size() - 1];
-        } else
+          out += (p.language == "zh" ? "" : " ") + spell(fstr) +
+                 forms[f == 1 ? 0 : forms.size() - 1];
+        } else if (p.language == "ko" || (p.language == "id" && code == "IDR"))
+          out += " " + minor;
+        else
           out += " " + p.words[4] + " " + minor;
       }
     }
@@ -478,24 +502,31 @@ struct Context {
       return spell(hs) + "時" + spell(ms) + "分" +
              (has_seconds ? spell(ss) + "秒" : "");
     if (l == "ko")
-      return spell(hs, hour >= 1 && hour <= 23 ? "native" : "") + " 시 " +
+      return (ampm.empty() ? spell(hs)
+                          : (ampm == "am" ? "오전 " : "오후 ") +
+                                spell(std::to_string(h), "native")) + " 시 " +
              spell(ms) + " 분" + (has_seconds ? " " + spell(ss) + " 초" : "");
     std::string out;
     if (l == "hi")
       out = spell(hs) + " बजकर " + spell(ms) + " मिनट";
     else if (l == "de")
-      out = spell(hs, "unit") + " Uhr " + spell(ms);
+      out = spell(hs, "unit") + " Uhr " +
+            (has_seconds ? count_unit(ms, {"Minute", "Minuten"}, true) : spell(ms));
     else if (l == "nl")
-      out = spell(hs) + " uur " + spell(ms);
+      out = spell(hs) + " uur " +
+            (has_seconds ? count_unit(ms, {"minuut", "minuten"}) : spell(ms));
     else if (l == "fr")
       out = spell(hs, "unit", true) + " " + (hour == 1 ? "heure" : "heures") +
-            " " + spell(ms);
+            " " + (has_seconds ? count_unit(ms, {"minute", "minutes"}, true) : spell(ms));
     else if (l == "it")
       out = (hour == 1 ? std::string("una") : spell(hs)) +
             (m == 0 ? " in punto" : " e " + spell(ms));
     else if (l == "es")
-      out = (hour == 1 ? std::string("una") : spell(hs)) +
-            (m == 0 ? " en punto" : " y " + spell(ms));
+      out = has_seconds
+                ? spell(hs, "unit", true) + (hour == 1 ? " hora, " : " horas, ") +
+                      count_unit(ms, {"minuto", "minutos"})
+                : (hour == 1 ? std::string("una") : spell(hs)) +
+                      (m == 0 ? " en punto" : " y " + spell(ms));
     else if (l == "tr")
       out = spell(hs) + " " + (m < 10 ? spell("0") + " " : "") + spell(ms);
     else if (l == "id")
@@ -516,6 +547,19 @@ struct Context {
           "الصفر",   "الواحدة",      "الثانية",     "الثالثة", "الرابعة",
           "الخامسة", "السادسة",      "السابعة",     "الثامنة", "التاسعة",
           "العاشرة", "الحادية عشرة", "الثانية عشرة"};
+      if (!ampm.empty()) {
+        out = hours[h];
+        if (!has_seconds && m == 30)
+          out += " والنصف";
+        else if (!has_seconds && m == 15)
+          out += " والربع";
+        else if (m != 0 || has_seconds)
+          out += " و" + count_unit(ms, {"دقيقة", "دقيقتان", "دقائق", "دقيقة", "دقيقة"}, true);
+        if (has_seconds)
+          out += " و" + count_unit(ss, {"ثانية", "ثانيتان", "ثوان", "ثانية", "ثانية"}, true);
+        return out + " " + (ampm == "am" ? (h == 12 ? "ليلًا" : "صباحًا")
+                                         : (h == 12 ? "ظهرًا" : "مساءً"));
+      }
       if (hour <= 12)
         out = hours[hour];
       else if (hour < 20)
@@ -532,7 +576,8 @@ struct Context {
     } else
       out = spell(hs) + " " + p.words[5] + " " + spell(ms) + " " + p.words[7];
     if (has_seconds)
-      out += " " + p.words[4] + " " + count_unit(ss, {p.words[9], p.words[10]});
+      out += " " + p.words[4] + " " +
+             count_unit(ss, {p.words[9], p.words[10]}, l == "fr" || l == "de");
     return out;
   }
 };
@@ -644,9 +689,15 @@ std::string currency_code(std::string c, const Profile& p) {
   auto i = map.find(c);
   return i != map.end() ? i->second : c;
 }
+const std::vector<std::string>& contact_tlds() {
+  static const std::vector<std::string> tlds = {
+      "com", "org", "net", "io", "ai", "co", "gov", "edu", "app", "dev", "info", "biz", "me", "name", "tv", "xyz", "online", "site", "tech", "store", "example", "test",
+      "us", "uk", "cn", "nl", "fr", "de", "in", "id", "it", "jp", "kr", "pl", "br", "pt", "ru", "es", "tr", "sa", "ae", "om", "au", "ca", "nz", "ch", "at", "be", "se", "no", "dk", "fi", "za", "sg", "hk", "рф", "中国", "भारत", "한국", "السعودية"};
+  return tlds;
+}
 struct Patterns {
   std::unique_ptr<icu::RegexPattern> protect, date, east_date, money_prefix,
-      money_suffix, time, dotted_time, timezone, phone, digit_code, percent,
+      money_suffix, time, dotted_time, timezone, phone, phone_extension, digit_code, percent,
       number, hour_ampm, ordinal, percent_prefix, clock_range, number_range,
       money_range_prefix, money_range_suffix;
   std::map<std::string, std::unique_ptr<icu::RegexPattern>> named_dates;
@@ -662,8 +713,19 @@ struct Patterns {
       if (!magnitude.empty()) magnitude += '|';
       magnitude += quote_regex(name);
     }
-    protect = pattern(
-        R"((?:https?://|www\.)[^\s<>]+|[\p{L}0-9._%+\-]+@[\p{L}0-9.\-]+\.[\p{L}]{2,}|[A-Za-z]:\\[^\s<>]+|(?:[A-Za-z][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}(?:/[^\s<>]*)?|(?i:(?:python|version|build|release|iOS|CUDA|HTTP|API|RFC)\s*[-/]?\s*v?[0-9][A-Za-z0-9._/\-]*)|\bv[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?|(?<![0-9])[0-9]{1,3}(?:\.[0-9]{1,3}){2,3}(?![0-9])|(?<![0-9/])[0-9]+/[0-9]+(?![/0-9])|\b(?!(?:USD|EUR|GBP|INR|BRL|RUB|KRW|JPY|CNY|TRY|PLN|CHF|SAR|AED|OMR|KWD|BHD|CAD|AUD|IDR|Rp)[0-9])[A-Za-z_]+[0-9][A-Za-z0-9_.-]*\b|\b[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]+\b|(?<![0-9])[0-9]+[.,]{2,}[0-9.,]*|(?<![0-9/])[0-9]{1,2}/[0-9]{1,2}/[0-9]{2}(?![0-9/]))");
+    std::string tlds;
+    for (const auto& suffix : contact_tlds()) {
+      if (!tlds.empty()) tlds += '|';
+      tlds += quote_regex(suffix);
+    }
+    // Numeric hostnames require a recognized suffix, so numeric/identifier
+    // mixtures do not acquire a different boundary on the next pass.
+    const std::string numeric_domain =
+        R"((?<![\p{L}0-9_])[0-9][\p{L}0-9\-]*(?:\.[\p{L}0-9\-]+)*\.(?i:)" +
+        tlds + R"()(?![\p{L}0-9_\-])(?:\:[0-9]{1,5})?(?:[/?#][^\s<>]*)?)";
+    protect = pattern(numeric_domain + "|" +
+        R"(\b[0-9]+(?:[.,][0-9]+)*[A-Za-z_]+[0-9][A-Za-z0-9_.\-]*\b|)" +
+        R"((?i:https?://|www\.)[^\s<>]+|[\p{L}0-9._%+\-]+@[\p{L}0-9.\-]+\.[\p{L}]{2,}|[A-Za-z]:\\[^\s<>]+|(?:[\p{L}][\p{L}0-9\-]*\.)+[\p{L}]{2,}(?::[0-9]{1,5})?(?:[/?#][^\s<>]*)?|(?i:(?:python|version|build|release|iOS|CUDA|HTTP|API|RFC)\s*[-/]?\s*v?[0-9][A-Za-z0-9._/\-]*)|\bv[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?|(?<![0-9])[0-9]{1,3}(?:\.[0-9]{1,3}){2,3}(?![0-9])|(?<![0-9/])[0-9]+/[0-9]+(?![/0-9])|\b(?!(?:USD|EUR|GBP|INR|BRL|RUB|KRW|JPY|CNY|TRY|PLN|CHF|SAR|AED|OMR|KWD|BHD|CAD|AUD|IDR|Rp)[0-9])[A-Za-z_]+[0-9][A-Za-z0-9_.-]*\b|\b[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]+\b|(?<![0-9])[0-9]+[.,]{2,}[0-9.,]*|(?<![0-9/])[0-9]{1,2}/[0-9]{1,2}/[0-9]{2}(?![0-9/]))");
     date = pattern(
         R"((?<![0-9])([0-9]{4})[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})(?![0-9])|(?<![0-9])([0-9]{1,2})[/.-]([0-9]{1,2})[/.-]([0-9]{4})(?![0-9]))");
     east_date = pattern(
@@ -692,10 +754,13 @@ struct Patterns {
         R"((?i:(?:pukul|jam|om|kl|ore|alle|saat|الساعة)\s+)([0-9]{1,2})\.([0-9]{2})(?![0-9.]))");
     timezone =
         pattern(R"((?:UTC|GMT)\s*([+-])([0-9]{1,2}):([0-9]{2})(?![0-9]))");
-    phone = pattern(
-        R"((?<![0-9])(?:[0-9]{3}[.][0-9]{3}-[0-9]{4}|[0-9]{1,3}-[0-9]{3}-[0-9]{3}-[0-9]{4}|[0-9]{2,3} +[0-9]{3,5}-[0-9]{3,5}|\+[0-9]{1,3}[ \-][0-9][0-9 ()\-]{5,}[0-9]|\([0-9]{2,4}\)[ \-]?[0-9][0-9 \-]{4,}[0-9]|[0-9]{2,5}-[0-9]{3,5}(?:-[0-9]{2,5})?)(?![0-9]))");
+    const std::string phone_body =
+        R"((?:[0-9]{3}[.][0-9]{3}-[0-9]{4}|[0-9]{1,3}-[0-9]{3}-[0-9]{3}-[0-9]{4}|[0-9]{2,3} +[0-9]{3,5}-[0-9]{3,5}|\+[0-9]{7,15}|\+[0-9]{1,3}[ \-](?:\([0-9]{2,4}\)[ \-]?|[0-9])[0-9 ()\-]{4,}[0-9]|\([0-9]{2,4}\)[ \-]?[0-9][0-9 \-]{4,}[0-9]|[0-9]{2,5}-[0-9]{3,5}-[0-9]{2,5}|[0-9]{2}-[0-9]{5}|[0-9]{3}-[0-9]{4,5}|[0-9]{4,5}-[0-9]{3,5}|[0-9]{3,4} +[0-9]{3,4} +[0-9]{4}|[0-9]{5} +[0-9]{5}|[0-9]{2}(?: +[0-9]{2}){4}))";
+    phone = pattern("(?<![\\p{L}0-9])(" + phone_body + ")(?![0-9])");
+    phone_extension = pattern("(?<![\\p{L}0-9])(" + phone_body +
+        R"(|[0-9]{7,15})\s*(?i:x|ext(?:ension)?\.?|poste|Durchwahl|toestel|interno|wew\.?|ramal|anexo|dahili|доб\.?|分机|内線|내선|إضافي|एक्सटेंशन|ekstensi)\s*[:：.]?\s*([0-9]{1,8})(?![0-9]))");
     digit_code = pattern(
-        R"((?i:(?:OTP|PIN|code|phone|tel|код|कोड|फोन|رمز|هاتف|kode|telefon|código|コード|코드|代码|编号)\s*[:：]?\s+)([0-9][0-9 \-]{1,}[0-9])(?![0-9]))");
+        R"((?i:(?:OTP|PIN|code|phone|telephone|mobile|tel|telefoon|mobiel|téléphone|portable|tél|Handy|telepon|ponsel|telp|telefono|cellulare|telefone|celular|teléfono|móvil|telefon|cep telefonu|телефон|мобильный|код|कोड|फोन|फ़ोन|मोबाइल|رمز|هاتف|الهاتف|جوال|kode|código|コード|コード番号|電話|携帯|전화|휴대폰|코드|电话|手机|代码|编号)\s*[:：]?\s*)([0-9](?:[0-9 \-]*[0-9])?)(?![0-9]))");
     percent = pattern("(?<![A-Za-z0-9_])(" + num + ")\\s*[%％٪](?![0-9])");
     percent_prefix = pattern("[%％٪]\\s*(" + num + ")(?![0-9])");
     ordinal =
@@ -729,12 +794,13 @@ Patterns& patterns() {
   return p;
 }
 struct Signals {
-  bool letters = false, currency = false, percent = false, dash = false,
+  bool letters = false, currency = false, percent = false, dash = false, space = false,
        colon = false, dot = false, slash = false, phone = false;
   explicit Signals(const UnicodeString& text) {
     for (int32_t i = 0; i < text.length(); ++i) {
       auto ch = text.charAt(i);
       letters |= u_isalpha(ch);
+      space |= u_isUWhiteSpace(ch);
       percent |= ch == '%' || ch == 0xff05 || ch == 0x066a;
       dash |= ch == '-' || ch == 0x2013 || ch == 0x2014;
       colon |= ch == ':';
@@ -768,10 +834,137 @@ bool may_match(const icu::RegexPattern* pattern, const Signals& s) {
   if (pattern == p.clock_range.get()) return s.colon && s.dash;
   if (pattern == p.number_range.get()) return s.dash;
   if (pattern == p.time.get() || pattern == p.timezone.get()) return s.colon;
-  if (pattern == p.phone.get()) return s.phone;
+  if (pattern == p.phone.get()) return s.phone || s.space;
   if (pattern == p.dotted_time.get()) return s.dot && s.letters;
   if (pattern == p.number.get()) return true;
   return s.letters;
+}
+// Contact punctuation is lexical glue; labels retain the caller's spelling.
+// No DNS, language detector, or model call is involved.
+const std::array<std::string, 12>& contact_words(const std::string& language) {
+  static const std::map<std::string, std::array<std::string, 12>> words = {
+    {"en", {"at", "dot", "underscore", "hyphen", "slash", "colon", "question mark", "equals", "ampersand", "hash", "percent", "extension"}},
+    {"ar", {"آت", "نقطة", "شرطة سفلية", "شرطة", "شرطة مائلة", "نقطتان", "علامة استفهام", "يساوي", "علامة العطف", "علامة المربع", "بالمئة", "تحويلة"}},
+    {"zh", {"艾特", "点", "下划线", "连字符", "斜杠", "冒号", "问号", "等于", "与符号", "井号", "百分号", "分机"}},
+    {"nl", {"apenstaartje", "punt", "laag streepje", "streepje", "schuine streep", "dubbele punt", "vraagteken", "is gelijk aan", "ampersand", "hekje", "procent", "toestel"}},
+    {"fr", {"arobase", "point", "tiret bas", "tiret", "barre oblique", "deux-points", "point d'interrogation", "égal", "esperluette", "dièse", "pour cent", "poste"}},
+    {"de", {"ät", "Punkt", "Unterstrich", "Bindestrich", "Schrägstrich", "Doppelpunkt", "Fragezeichen", "gleich", "Und-Zeichen", "Raute", "Prozent", "Durchwahl"}},
+    {"hi", {"ऐट", "डॉट", "अंडरस्कोर", "हाइफ़न", "स्लैश", "कोलन", "प्रश्न चिह्न", "बराबर", "ऐम्परसैंड", "हैश", "प्रतिशत", "एक्सटेंशन"}},
+    {"id", {"at", "titik", "garis bawah", "tanda hubung", "garis miring", "titik dua", "tanda tanya", "sama dengan", "ampersand", "pagar", "persen", "ekstensi"}},
+    {"it", {"chiocciola", "punto", "trattino basso", "trattino", "barra", "due punti", "punto interrogativo", "uguale", "e commerciale", "cancelletto", "per cento", "interno"}},
+    {"ja", {"アットマーク", "ドット", "アンダースコア", "ハイフン", "スラッシュ", "コロン", "疑問符", "イコール", "アンパサンド", "シャープ", "パーセント", "内線"}},
+    {"ko", {"골뱅이", "점", "밑줄", "하이픈", "슬래시", "콜론", "물음표", "등호", "앰퍼샌드", "샵", "퍼센트", "내선"}},
+    {"pl", {"małpa", "kropka", "podkreślenie", "łącznik", "ukośnik", "dwukropek", "znak zapytania", "równa się", "ampersand", "kratka", "procent", "wewnętrzny"}},
+    {"pt", {"arroba", "ponto", "sublinhado", "hífen", "barra", "dois-pontos", "ponto de interrogação", "igual", "e comercial", "cerquilha", "por cento", "ramal"}},
+    {"ru", {"собака", "точка", "нижнее подчёркивание", "дефис", "слеш", "двоеточие", "знак вопроса", "равно", "амперсанд", "решётка", "процент", "добавочный"}},
+    {"es", {"arroba", "punto", "guion bajo", "guion", "barra", "dos puntos", "signo de interrogación", "igual", "ampersand", "almohadilla", "por ciento", "extensión"}},
+    {"tr", {"et", "nokta", "alt çizgi", "kısa çizgi", "eğik çizgi", "iki nokta", "soru işareti", "eşittir", "ve işareti", "kare", "yüzde", "dahili"}},
+  };
+  return words.at(language);
+}
+std::string contact_plus(const Context& c) {
+  if (c.p.language == "hi") return "प्लस";
+  if (c.p.language == "ar") return "زائد";
+  if (c.p.language == "zh") return "加";
+  return c.p.words[2];
+}
+bool electronic_shape(std::string_view raw) {
+  if (raw.find('@') != raw.npos || raw.find("://") != raw.npos) return true;
+  for (size_t i = 1; i + 1 < raw.size(); ++i)
+    if (raw[i] == '.' && static_cast<unsigned char>(raw[i - 1]) > 32 &&
+        static_cast<unsigned char>(raw[i + 1]) > 32 &&
+        ((raw[i + 1] >= 'A' && raw[i + 1] <= 'Z') ||
+         (raw[i + 1] >= 'a' && raw[i + 1] <= 'z') ||
+         static_cast<unsigned char>(raw[i + 1]) >= 128)) return true;
+  return false;
+}
+std::string electronic(std::string raw, Context& c) {
+  for (unsigned char ch : raw) if (ch < 32 || ch == 127) return "";
+  std::string ending;
+  int parentheses = static_cast<int>(std::count(raw.begin(), raw.end(), ')')) -
+                    static_cast<int>(std::count(raw.begin(), raw.end(), '('));
+  int brackets = static_cast<int>(std::count(raw.begin(), raw.end(), ']')) -
+                 static_cast<int>(std::count(raw.begin(), raw.end(), '['));
+  while (!raw.empty()) {
+    char last = raw.back();
+    bool punctuation = std::string(".,!?;:\"'").find(last) != std::string::npos;
+    bool closing = (last == ')' && parentheses > 0) || (last == ']' && brackets > 0);
+    if (!punctuation && !closing) break;
+    ending.push_back(last);
+    if (last == ')') --parentheses;
+    if (last == ']') --brackets;
+    raw.pop_back();
+  }
+  std::reverse(ending.begin(), ending.end());
+  auto folded = u(raw);
+  folded.foldCase();
+  const auto lower = utf8(folded);
+  const bool scheme = lower.rfind("http://", 0) == 0 || lower.rfind("https://", 0) == 0;
+  const bool email = raw.find('@') != std::string::npos && raw.find_first_of("/:\\ \t") == std::string::npos;
+  if (raw.find('@') != std::string::npos && !email && !scheme) return "";
+  if (!scheme && !email && lower.rfind("www.", 0) != 0) {
+    auto host = raw.substr(0, raw.find_first_of("/:?#"));
+    auto dot = host.rfind('.');
+    if (dot == std::string::npos) return "";
+    auto suffix = u(host.substr(dot + 1));
+    suffix.foldCase();
+    const auto& tlds = contact_tlds();
+    if (std::find(tlds.begin(), tlds.end(), utf8(suffix)) == tlds.end()) return "";
+    // A title-cased suffix is commonly missing sentence spacing (noon.It).
+    const auto tail = host.substr(dot + 1);
+    if (tail.size() >= 2 && tail[0] >= 'A' && tail[0] <= 'Z' &&
+        tail[1] >= 'a' && tail[1] <= 'z') return "";
+  }
+  const auto& words = contact_words(c.p.language);
+  const std::string symbols = "@._-/:?=&#%";
+  std::vector<std::string> pieces;
+  std::string label;
+  auto flush = [&] { if (!label.empty()) { pieces.push_back(label); label.clear(); } };
+  for (size_t i = 0; i < raw.size(); ++i) {
+    const char ch = raw[i];
+    const auto symbol = symbols.find(ch);
+    if (ch >= '0' && ch <= '9') {
+      flush(); pieces.push_back(c.digit_words(std::string(1, ch)));
+    } else if (symbol != std::string::npos || ch == '+') {
+      flush(); pieces.push_back(ch == '+' ? contact_plus(c) : words[symbol]);
+    } else if (scheme && i < raw.find(':')) {
+      flush(); pieces.push_back(std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(ch)))));
+    } else label += ch;
+  }
+  flush();
+  return join(pieces, " ") + ending;
+}
+std::string telephone(const std::string& raw, Context& c) {
+  std::vector<std::string> groups;
+  std::string digits;
+  for (char ch : raw) {
+    if (ch >= '0' && ch <= '9') digits += ch;
+    else if (!digits.empty()) { groups.push_back(c.digit_words(digits)); digits.clear(); }
+  }
+  if (!digits.empty()) groups.push_back(c.digit_words(digits));
+  return (!raw.empty() && raw[0] == '+' ? contact_plus(c) + " " : "") + join(groups, ", ");
+}
+int32_t russian_amount_context(const UnicodeString& text, int32_t at) {
+  int32_t begin = std::max(0, at - 64);
+  auto prefix = text.tempSubStringBetween(begin, at);
+  int32_t leading = 0;
+  while (leading < prefix.length() && u_isUWhiteSpace(prefix.charAt(leading))) ++leading;
+  prefix.remove(0, leading);
+  begin += leading;
+  prefix.trim();
+  if (prefix.endsWith(u(":"))) {
+    prefix.truncate(prefix.length() - 1);
+    prefix.trim();
+  }
+  prefix.foldCase();
+  for (const auto* verb : {"составляет", "составляют", "составлял", "составляла", "составило", "составили"}) {
+    const auto word = u(verb);
+    const int32_t start = prefix.length() - word.length();
+    if (start >= 0 && prefix.endsWith(word) &&
+        (start == 0 || !u_isalpha(prefix.charAt(start - 1))))
+      return begin + start;
+  }
+  return -1;
 }
 std::string run(const UnicodeString& original, Context& c) {
   UnicodeString text(original);
@@ -791,7 +984,7 @@ std::string run(const UnicodeString& original, Context& c) {
       if (a < m.end && b > m.begin) return;
     selected.push_back({a, b, std::move(out)});
   };
-  auto scan = [&](const icu::RegexPattern& p, auto callback) {
+  auto scan = [&](const icu::RegexPattern& p, auto callback, bool skip_empty = false) {
     if (!may_match(&p, signals)) return;
     UErrorCode e = U_ZERO_ERROR;
     std::unique_ptr<icu::RegexMatcher> m(p.matcher(text, e));
@@ -816,6 +1009,7 @@ std::string run(const UnicodeString& original, Context& c) {
         auto group = [&](int n) { return utf8(m->group(n, e)); };
         int32_t a = m->start(e), b = m->end(e);
         std::string result = callback(group, a, b);
+        if (skip_empty && result.empty()) continue;
         add(a, b,
             result.empty() ? utf8(original.tempSubStringBetween(a, b))
                            : result);
@@ -824,9 +1018,28 @@ std::string run(const UnicodeString& original, Context& c) {
     if (U_FAILURE(e)) throw std::runtime_error("Voice grammar matcher limit");
   };
   auto& p = patterns();
-  scan(*p.protect, [&](auto, int32_t a, int32_t b) {
+  scan(*p.protect, [&](auto g, int32_t a, int32_t b) {
+    const auto raw = g(0);
+    if (electronic_shape(raw)) {
+      auto spoken = electronic(raw, c);
+      if (!spoken.empty()) return spoken;
+    }
+    // An extension such as "x123" belongs to a preceding telephone span,
+    // while the same token on its own remains a protected identifier.
+    int32_t before = a - 1;
+    while (before >= 0 && u_isUWhiteSpace(text.charAt(before))) --before;
+    if (before >= 0 && u_isdigit(text.charAt(before)) && contains_digits(raw)) {
+      UErrorCode error = U_ZERO_ERROR;
+      std::unique_ptr<icu::RegexMatcher> matcher(p.phone_extension->matcher(text, error));
+      matcher->setTimeLimit(30, error);
+      matcher->region(std::max(0, a - 64), b, error);
+      matcher->useTransparentBounds(true);
+      while (matcher->find(error))
+        if (matcher->start(error) < a && matcher->end(error) == b)
+          return std::string();
+    }
     return utf8(original.tempSubStringBetween(a, b));
-  });
+  }, true);
   scan(*p.date, [&](auto g, int32_t, int32_t) {
     if (!g(1).empty())
       return c.date(std::stoi(g(1)), std::stoi(g(2)), std::stoi(g(3)));
@@ -847,32 +1060,36 @@ std::string run(const UnicodeString& original, Context& c) {
                     std::stoi(g(day_first ? 1 : 5)));
     });
   }
-  scan(*p.money_range_prefix, [&](auto g, int32_t, int32_t) {
+  scan(*p.money_range_prefix, [&](auto g, int32_t start, int32_t) {
     auto a = parse_number(g(2), c.p), b = parse_number(g(4), c.p);
     if (!a || !b) return std::string();
     auto first = currency_code(g(1), c.p),
          second = g(3).empty() ? first : currency_code(g(3), c.p);
-    return c.money(*a, first) + " " + range_word(c.p) + " " +
-           c.money(*b, second);
+    bool accusative = c.p.language == "ru" && russian_amount_context(text, start) >= 0;
+    return c.money(*a, first, accusative) + " " + range_word(c.p) + " " +
+           c.money(*b, second, accusative);
   });
-  scan(*p.money_range_suffix, [&](auto g, int32_t, int32_t) {
+  scan(*p.money_range_suffix, [&](auto g, int32_t start, int32_t) {
     auto a = parse_number(g(1), c.p), b = parse_number(g(2), c.p);
     if (!a || !b) return std::string();
     auto code = currency_code(g(3), c.p);
-    return c.money(*a, code) + " " + range_word(c.p) + " " + c.money(*b, code);
+    bool accusative = c.p.language == "ru" && russian_amount_context(text, start) >= 0;
+    return c.money(*a, code, accusative) + " " + range_word(c.p) + " " + c.money(*b, code, accusative);
   });
-  scan(*p.money_prefix, [&](auto g, int32_t, int32_t) {
+  scan(*p.money_prefix, [&](auto g, int32_t start, int32_t) {
     auto n = parse_number(g(3), c.p);
     if (!n) return std::string();
     if (!g(1).empty()) {
       if (n->sign) return std::string();
       n->sign = g(1)[0];
     }
-    return c.money(scale_money(*n, g(4)), currency_code(g(2), c.p));
+    return c.money(scale_money(*n, g(4)), currency_code(g(2), c.p),
+                   c.p.language == "ru" && russian_amount_context(text, start) >= 0);
   });
-  scan(*p.money_suffix, [&](auto g, int32_t, int32_t) {
+  scan(*p.money_suffix, [&](auto g, int32_t start, int32_t) {
     auto n = parse_number(g(1), c.p);
-    return n ? c.money(scale_money(*n, g(2)), currency_code(g(3), c.p))
+    return n ? c.money(scale_money(*n, g(2)), currency_code(g(3), c.p),
+                       c.p.language == "ru" && russian_amount_context(text, start) >= 0)
              : std::string();
   });
   scan(*p.timezone, [&](auto g, int32_t, int32_t) {
@@ -914,15 +1131,15 @@ std::string run(const UnicodeString& original, Context& c) {
     if (!out.empty() && g(0).back() == '.') out += '.';
     return out;
   });
+  scan(*p.phone_extension, [&](auto g, int32_t, int32_t) {
+    return telephone(g(1), c) + " " + contact_words(c.p.language)[11] + " " + c.digit_words(g(2));
+  });
   scan(*p.phone, [&](auto g, int32_t, int32_t) {
-    std::string raw = g(0);
-    std::string out;
-    if (!raw.empty() && raw[0] == '+') out = c.p.words[2] + " ";
-    return out + c.digit_words(raw);
+    return telephone(g(0), c);
   });
   scan(*p.digit_code, [&](auto g, int32_t, int32_t) {
     auto raw = g(0);
-    return raw.substr(0, raw.size() - g(1).size()) + c.digit_words(g(1));
+    return raw.substr(0, raw.size() - g(1).size()) + telephone(g(1), c);
   });
   scan(*p.number_range, [&](auto g, int32_t, int32_t) {
     auto a = parse_number(g(1), c.p), b = parse_number(g(2), c.p);
@@ -931,14 +1148,7 @@ std::string run(const UnicodeString& original, Context& c) {
   });
   scan(*p.ordinal,
        [&](auto g, int32_t, int32_t) { return c.spell(g(1), "ordinal"); });
-  scan(*p.percent_prefix, [&](auto g, int32_t, int32_t) {
-    auto n = parse_number(g(1), c.p);
-    if (!n) return std::string();
-    auto value = c.number(*n);
-    if (c.p.language == "zh") return c.p.words[3] + value;
-    return c.p.language == "tr" ? c.p.words[3] + " " + value
-                                : value + " " + c.p.words[3];
-  });
+  // A percentage between adjacent values belongs to the preceding number.
   scan(*p.percent, [&](auto g, int32_t, int32_t) {
     auto n = parse_number(g(1), c.p);
     if (!n) return std::string();
@@ -946,6 +1156,14 @@ std::string run(const UnicodeString& original, Context& c) {
     return c.p.language == "zh" || c.p.language == "tr"
                ? c.p.words[3] + " " + value
                : value + " " + c.p.words[3];
+  });
+  scan(*p.percent_prefix, [&](auto g, int32_t, int32_t) {
+    auto n = parse_number(g(1), c.p);
+    if (!n) return std::string();
+    auto value = c.number(*n);
+    if (c.p.language == "zh") return c.p.words[3] + value;
+    return c.p.language == "tr" ? c.p.words[3] + " " + value
+                                : value + " " + c.p.words[3];
   });
   scan(*p.number, [&](auto g, int32_t, int32_t b) {
     auto n = parse_number(g(1), c.p);
@@ -1013,7 +1231,7 @@ std::string normalize(std::string_view text, std::string_view language) {
       numeric = true;
       break;
     }
-  if (!numeric) return std::string(text);
+  if (!numeric && !electronic_shape(text)) return std::string(text);
   auto& ca = cache();
   std::string key = p.language + "\x1f" + std::string(text);
   bool use_cache = text.size() <= 4096;
@@ -1079,6 +1297,7 @@ std::string prepare_for_segmentation(std::string_view raw,
       p.dotted_time.get(),
       p.timezone.get(),
       p.phone.get(),
+      p.phone_extension.get(),
       p.digit_code.get(),
       p.percent.get(),
       p.percent_prefix.get(),
@@ -1093,6 +1312,12 @@ std::string prepare_for_segmentation(std::string_view raw,
     matcher->setTimeLimit(30, error);
     while (matcher->find(error)) {
       int32_t start = matcher->start(error), end = matcher->end(error);
+      if (prof.language == "ru" &&
+          (pattern == p.money_prefix.get() || pattern == p.money_suffix.get() ||
+           pattern == p.money_range_prefix.get() || pattern == p.money_range_suffix.get())) {
+        int32_t context = russian_amount_context(text, start);
+        if (context >= 0) start = context;
+      }
       if (pattern == p.number.get() &&
           !parse_number(utf8(matcher->group(1, error)), prof))
         continue;
