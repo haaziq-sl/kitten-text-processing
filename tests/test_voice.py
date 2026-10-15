@@ -32,6 +32,18 @@ class VoiceTests(unittest.TestCase):
                 with self.subTest(lang=lang, value=value):
                     self.assertEqual(self.n.normalize(value, lang), value)
 
+    def test_serving_control_markers_survive_in_every_language(self):
+        for lang in VOICE_LANGUAGES:
+            spoken = self.n.normalize('12', lang)
+            for index in (0, 1, 2, 9, 10, 42, 123):
+                marker = f'\ue000{index}\ue001'
+                with self.subTest(lang=lang, index=index):
+                    self.assertEqual(self.n.normalize(marker, lang), marker)
+                    self.assertEqual(self.n.normalize(f'{marker} 12 {marker}', lang),
+                                     f'{marker} {spoken} {marker}')
+            sequence = ''.join(f'\ue000{i}\ue001' for i in range(21))
+            self.assertEqual(self.n.normalize(sequence, lang), sequence)
+
     def test_exact_precision_and_currency_spacing(self):
         self.assertEqual(self.n.normalize('₹12.50 है।', 'hi'), 'बारह रुपये और पचास पैसे है।')
         self.assertEqual(self.n.normalize('कीमत ₹12.50', 'hi'), 'कीमत बारह रुपये और पचास पैसे')
