@@ -723,7 +723,9 @@ struct Patterns {
     const std::string numeric_domain =
         R"((?<![\p{L}0-9_])[0-9][\p{L}0-9\-]*(?:\.[\p{L}0-9\-]+)*\.(?i:)" +
         tlds + R"()(?![\p{L}0-9_\-])(?:\:[0-9]{1,5})?(?:[/?#][^\s<>]*)?)";
-    protect = pattern(numeric_domain + "|" +
+    // Serving frontends replace documented controls with these opaque
+    // markers. Their numeric indexes are identifiers, never spoken values.
+    protect = pattern(R"(\x{E000}[0-9]+\x{E001}|)" + numeric_domain + "|" +
         R"(\b[0-9]+(?:[.,][0-9]+)*[A-Za-z_]+[0-9][A-Za-z0-9_.\-]*\b|)" +
         R"((?i:https?://|www\.)[^\s<>]+|[\p{L}0-9._%+\-]+@[\p{L}0-9.\-]+\.[\p{L}]{2,}|[A-Za-z]:\\[^\s<>]+|(?:[\p{L}][\p{L}0-9\-]*\.)+[\p{L}]{2,}(?::[0-9]{1,5})?(?:[/?#][^\s<>]*)?|(?i:(?:python|version|build|release|iOS|CUDA|HTTP|API|RFC)\s*[-/]?\s*v?[0-9][A-Za-z0-9._/\-]*)|\bv[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?|(?<![0-9])[0-9]{1,3}(?:\.[0-9]{1,3}){2,3}(?![0-9])|(?<![0-9/])[0-9]+/[0-9]+(?![/0-9])|\b(?!(?:USD|EUR|GBP|INR|BRL|RUB|KRW|JPY|CNY|TRY|PLN|CHF|SAR|AED|OMR|KWD|BHD|CAD|AUD|IDR|Rp)[0-9])[A-Za-z_]+[0-9][A-Za-z0-9_.-]*\b|\b[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]+\b|(?<![0-9])[0-9]+[.,]{2,}[0-9.,]*|(?<![0-9/])[0-9]{1,2}/[0-9]{1,2}/[0-9]{2}(?![0-9/]))");
     date = pattern(
@@ -795,10 +797,11 @@ Patterns& patterns() {
 }
 struct Signals {
   bool letters = false, currency = false, percent = false, dash = false, space = false,
-       colon = false, dot = false, slash = false, phone = false;
+       colon = false, dot = false, slash = false, phone = false, control_marker = false;
   explicit Signals(const UnicodeString& text) {
     for (int32_t i = 0; i < text.length(); ++i) {
       auto ch = text.charAt(i);
+      control_marker |= ch == 0xe000;
       letters |= u_isalpha(ch);
       space |= u_isUWhiteSpace(ch);
       percent |= ch == '%' || ch == 0xff05 || ch == 0x066a;
@@ -822,7 +825,7 @@ struct Signals {
 };
 bool may_match(const icu::RegexPattern* pattern, const Signals& s) {
   auto& p = patterns();
-  if (pattern == p.protect.get()) return s.letters || s.slash || s.dot;
+  if (pattern == p.protect.get()) return s.control_marker || s.letters || s.slash || s.dot;
   if (pattern == p.date.get()) return s.dash || s.dot || s.slash;
   if (pattern == p.money_prefix.get() || pattern == p.money_suffix.get())
     return s.currency;
