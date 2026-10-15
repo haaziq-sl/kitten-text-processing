@@ -52,6 +52,9 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(self.n.normalize('PIN: 1234', 'en'), 'PIN: one two three four')
 
     def test_native_time_and_counters(self):
+        self.assertEqual(self.n.normalize('1', 'de'), 'eins')
+        self.assertEqual(self.n.normalize('21', 'it'), 'ventuno')
+        self.assertEqual(self.n.normalize('21', 'es'), 'veintiuno')
         self.assertEqual(self.n.normalize('ट्रेन 14:05 बजे चलेगी।', 'hi'),
                          'ट्रेन चौदह बजकर पाँच मिनट पर चलेगी।')
         self.assertEqual(self.n.normalize('o 14:05', 'pl'), 'o czternastej zero pięć')

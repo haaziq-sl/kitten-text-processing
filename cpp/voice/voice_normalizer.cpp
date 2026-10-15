@@ -207,6 +207,10 @@ struct Context {
                                 : "%spellout-cardinal-feminine";
     else if (kind == "unit")
       rule = "%spellout-cardinal-masculine";
+    else if (kind.empty() &&
+             (p.language == "de" || p.language == "it" || p.language == "es"))
+      rule =
+          "%spellout-numbering";  // eins / uno; apocopated forms require a noun
     if (rule.empty() || std::find(p.rule_names.begin(), p.rule_names.end(),
                                   rule) == p.rule_names.end()) {
       for (const auto& candidate :
@@ -246,7 +250,8 @@ struct Context {
     std::string out =
         n.whole.size() > 1 && n.whole[0] == '0' && n.fraction.empty()
             ? digit_words(n.whole)
-            : spell(n.whole, unit ? "unit" : "", feminine);
+            : spell(n.whole, unit && n.fraction.empty() ? "unit" : "",
+                    feminine);
     std::string gap = p.language == "zh" || p.language == "ja" ? "" : " ";
     if (!n.fraction.empty())
       out += gap + p.words[0] + gap + digit_words(n.fraction);
