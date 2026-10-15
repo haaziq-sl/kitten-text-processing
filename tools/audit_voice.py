@@ -32,7 +32,10 @@ def main():
         for path in args.input:
             # JSON permits literal U+2028/U+2029 inside strings; splitlines()
             # would split those valid fixture records in the middle.
-            for line_number, line in enumerate(path.read_text().split('\n'), 1):
+            lines = path.read_text().split('\n')
+            if lines and lines[-1] == '':
+                lines.pop()  # file terminator, rather than another fixture
+            for line_number, line in enumerate(lines, 1):
                 if not line and path.suffix != '.txt':
                     continue
                 if path.suffix == '.txt':
